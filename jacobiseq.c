@@ -1,86 +1,35 @@
-#include <time.h>
+//########################################################
+//Universidade de São Paulo (USP)
+//Instituto de Ciências Matemáticas e de Computação (ICMC)
+//SSC0903 - Computação de Alto Desempenho
+
+//Trabalho: Método Iterativo de Jacobi-Richardson
+
+//Matheus Yasuo Ribeiro Utino - 11233689
+//Pedro Ribas Serras - 11234328
+//Vinícius Silva Montanari - 11233709
+//########################################################
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
+#include <omp.h>
 
-typedef struct
+#define MAX(X, Y) (((X) > (Y)) ? (X) : (Y))
+#define SEED 131
+
+// Função para verificar a condição de parada do algoritmo
+int verificaCondicaoDeParada(double* x, double* xa, double limiar, int n)
 {
-    double **M;
-    int l, c;
-} Matriz;
-
-Matriz criaM(int linha, int coluna)
-{
-    Matriz m;
-    m.l = linha;
-    m.c = coluna;
-
-    m.M = (double **)malloc(linha * sizeof(double *));
-
-    for (int i = 0; i < linha; i++)
-    {
-        m.M[i] = (double *)malloc(coluna * sizeof(double));
-    }
-    return m;
-}
-
-void printM(Matriz m)
-{
-    for (int i = 0; i < m.l; i++)
-    {
-        for (int j = 0; j < m.c; j++)
-        {
-            printf("%lf ", m.M[i][j]);
-        }
-        printf("\n");
-    }
-}
-
-void preencheM(Matriz m)
-{
-    for (int i = 0; i < m.l; i++)
-    {
-        for (int j = 0; j < m.c; j++)
-        {
-            m.M[i][j] = rand();
-        }
-    }
-}
-
-void preencheMZero(Matriz m)
-{
-    for (int i = 0; i < m.l; i++)
-    {
-        for (int j = 0; j < m.c; j++)
-        {
-            m.M[i][j] = 0;
-        }
-    }
-}
-
-void copiaM(Matriz m, Matriz copy)
-{
-    for (int i = 0; i < m.l; i++)
-    {
-        for (int j = 0; j < m.c; j++)
-        {
-            copy.M[i][j] = m.M[i][j];
-        }
-    }
-}
-
-int verificaCondicaoDeParada(Matriz x, Matriz xa, double limiar)
-{
-
-    float maxN = abs(x.M[0][0] - xa.M[0][0]);
-    float maxD = abs(x.M[0][0]);
+    double maxN = fabs(x[0] - xa[0]);
+    double maxD = fabs(x[0]);
     int temp;
-    for (int i = 1; i < x.l; i++)
+    for (int i = 1; i < n; i++)
     {
-        int temp = abs(x.M[i][0] - xa.M[i][0]);
-        maxN = maxN < temp ? temp : maxN;
-        temp = abs(x.M[i][0]);
-        maxD = maxD < temp ? temp : maxD;
+        double temp = fabs(x[i] - xa[i]);
+        maxN = MAX(maxN,temp);
+        temp = fabs(x[i]);
+        maxD = MAX(maxD,temp);
     }
 
     if (maxN / maxD <= limiar)
@@ -89,28 +38,29 @@ int verificaCondicaoDeParada(Matriz x, Matriz xa, double limiar)
     return 0;
 }
 
-int converge(Matriz m)
+// Função para verificar se a matriz analisada converge para o algoritmo
+int converge(double* m, int n)
 {
-    for (int i = 0; i < m.l; i++)
+    for (int i = 0; i < n; i++)
     {
         double sum = 0.0;
 
         // A diagonal principal não pode ter elementos nulos
-        if (!m.M[i][i])
+        if (!m[i*n + i])
             return 0;
 
         // Feito dois fors para evitar o uso de if dentro do for
         for (int j = 0; j < i; j++)
         {
-            sum += m.M[i][j];
+            sum += fabs(m[i*n + j]);
         }
-        for (int j = i + 1; j < m.c; j++)
+        for (int j = i + 1; j < n; j++)
         {
-            sum += m.M[i][j];
+            sum += fabs(m[i*n + j]);
         }
 
         // caso maior que 1, não converge
-        if (sum / m.M[i][i] > 1)
+        if (sum / fabs(m[i*n + i]) > 1)
             return 0;
     }
     // Se passar por todos os teste é porque converge
@@ -120,8 +70,13 @@ int converge(Matriz m)
 int main(int argc, char *argv[])
 {
 
-    srand(10);
-    int n = 3;
+    srand(SEED);
+    int n = 3; // Tamanho da matriz quadrada
+	int maxInter = 100; // Variável para definir o max que os valores aleatórios serão gerados
+	double wtime; // Variável para captar o tempo de execução
+
+    double limiar = 1e-14; // Definindo o limiar para a condição de parada
+
     if (argc == 1)
     {
         printf("A dimensao n da matriz A não foi passada. Assumindo o valor n = 3.\n");
@@ -130,58 +85,106 @@ int main(int argc, char *argv[])
     {
         n = atoi(argv[1]);
     }
-    double limiar = 0.01;
 
-    Matriz A = criaM(n, n);
-    Matriz x = criaM(n, 1);
-    Matriz b = criaM(n, 1);
-    Matriz xanterior = criaM(n, 1);
+    // Alocando as matrizes 
+    double *A = (double *)malloc((n*n) * sizeof(double));
+    double *x = (double *)malloc((n) * sizeof(double));
+    double *b = (double *)malloc((n) * sizeof(double));
+    double *xanterior = (double *)malloc((n) * sizeof(double));
+    
+    /*
+     Gerando uma matriz que sempre convirja para testar o algoritmo
+     No caso, serão gerados valores no intervalo de [0, maxInter] e posteriormente os valores de uma linha serão somados e todos os elementos
+     dessa linha, menos o elemento da diagonal principal, serão divididos por esse somatório.
+     */
 
-    preencheM(A);
+	for (int i = 0; i < n; i++)
+	{
+		double linha = 0.0;
+		for (int j = 0; j < n; j++)
+		{
+			A[i*n + j] = rand()%maxInter + 1;
+			linha += A[i*n + j];
+		}
 
-    if (!converge(A))
+		for (int j = 0; j < n; j++)
+		{
+			if(i != j)
+				A[i*n + j] = A[i*n + j]/linha;
+		}
+	}
+
+    // Randomizando os valores do vetor b
+	for (int i = 0; i < n; i++)
+	{
+        b[i] = rand();
+	}
+
+    // Iniciando o vetor xanterior inicialmente com valores nulos
+	for (int i = 0; i < n; i++)
+	{
+        xanterior[i] = 0;
+	}
+
+    // Inicio do Método Iterativo de Jacobi-Richardson, logo começando a contagem do tempo
+	wtime = omp_get_wtime();
+
+    // Verificando a convergência do método, caso não convirja imprime a matriz e uma mensagem informando isso e finaliza o algoritmo
+    if (!converge(A,n))
     {
-        printM(A);
+        for (int i = 0; i < n; i++)
+		{
+			for (int j = 0; j < n; j++)
+			{
+				printf("%lf ", A[i*n + j]);
+        	}
+        	printf("\n");
+		}
         printf("Nao converge... finalizando");
         return -1;
     }
 
-    preencheM(b);
-
-    preencheMZero(xanterior);
-    int k = 0;
-
     while (1)
     {
-
+		// Calculando o x atual segundo o método
         for (int i = 0; i < n; i++)
         {
-            x.M[i][0] = b.M[i][0];
+            x[i] = b[i];
             for (int j = 0; j < i; j++)
             {
-                x.M[i][0] -= A.M[i][j] * xanterior.M[j][0];
+                x[i] -= A[i*n + j] * xanterior[j];
             }
             for (int j = i + 1; j < n; j++)
             {
-                x.M[i][0] -= A.M[i][j] * xanterior.M[j][0];
+                x[i] -= A[i*n + j] * xanterior[j];
             }
-
-            x.M[i][0] /= A.M[i][i];
+			
+            x[i] /= A[i*n + i];
         }
 
+
         // verificação condição de parada
-        if (verificaCondicaoDeParada(x, xanterior, limiar))
+        if (verificaCondicaoDeParada(x, xanterior, limiar,n))
         {
             break;
         }
 
         // copia x em xanterior
-        copiaM(x, xanterior);
-        k++;
+        for (int i = 0; i < n; i++)
+		{
+				xanterior[i] = x[i];
+		}
+
     }
 
+	wtime = omp_get_wtime() - wtime; // Fim do Método Iterativo de Jacobi-Richardson, logo fim da contagem do tempo
+
+	printf("Tempo: %lf\n", wtime);
+
+    
     int le;
 
+    
     printf("Escolha uma linha entre 1-%d para verificar o resultado da equacao: ", n);
     scanf("%d", &le);
     while (le < 1 || le > n)
@@ -194,11 +197,20 @@ int main(int argc, char *argv[])
     double sum = 0;
     for (int i = 0; i < n; i++)
     {
-        sum += A.M[le][i] * x.M[i][0];
-        printf("%lf*%lf ", A.M[le][i], x.M[i][0]);
+        sum += A[le*n+i] * x[i];
+        //printf("%lf*%lf ", A[le*n+i], x[i]);
     }
-    printf("= %lf ", sum);
-    printf("~= %lf\n", b.M[le][0]);
+    printf("Valor pelo método iterativo de jacobi-richardson: %lf \n", sum);
+    printf("Valor real: %lf\n", b[le]);
+    
+    
+
+    // Desalocando a memória dos vetores
+    free(A);
+    free(x);
+    free(b);
+    free(xanterior);
+    
 
     return 0;
 }
