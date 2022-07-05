@@ -13,11 +13,10 @@
 all: par seq
 
 par:
-	gcc -o jacobipar jacobipar.c -fopenmp 
+	mpicc -o jacobipar jacobipar-MPI_e_OpenMP.c -fopenmp 
 
 seq:
 	gcc -o jacobiseq jacobiseq.c -fopenmp 
-
 
 run:
 	@echo "------- Algoritimo Sequencial -------"
@@ -33,5 +32,5 @@ run-seq:
 	./jacobiseq $(N)
 
 run-par:
-	./jacobipar $(N) $(T)
+	mpirun -np $(P) jacobipar $(N) $(P) $(T)
 
