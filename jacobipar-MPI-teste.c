@@ -197,124 +197,144 @@ int main(int argc, char *argv[])
         b[i] = rand();
     }
 
-    // Iniciando o vetor xanterior inicialmente com valores nulos
-    for (int i = 0; i < n; i++)
+    if (rank == 0)
+        printf("\n-----Num nos = %d-----\n\n", P);
+    for (int ct = 0; ct < 4; ct++)
     {
-        xanterior[i] = 0;
-    }
+        if (ct == 0)
+            T = 2;
+        if (ct == 1)
+            T = 4;
+        if (ct == 2)
+            T = 8;
+        if (ct == 3)
+            T = 10;
+        if (rank == 0)
+            printf("\n-----Num threads = %d-----\n\n", T);
 
-    // printf("No: %d | numLinhasDoNo: %d | pl: %d\n", rank, numLinhasDoNo, numDaPrimeiraLinhaDoNo);
+        for (int te = 0; te < 30; te++)
+        {
+            // Iniciando o vetor xanterior inicialmente com valores nulos
+            for (int i = 0; i < n; i++)
+            {
+                xanterior[i] = 0;
+            }
 
-    wtime = omp_get_wtime();
-    // Verificando a convergência do método, caso não convirja imprime a matriz e uma mensagem informando isso e finaliza o algoritmo
-    int matrizConverge;
-    int noConverge = 1;
+            // printf("No: %d | numLinhasDoNo: %d | pl: %d\n", rank, numLinhasDoNo, numDaPrimeiraLinhaDoNo);
+
+            wtime = omp_get_wtime();
+            // Verificando a convergência do método, caso não convirja imprime a matriz e uma mensagem informando isso e finaliza o algoritmo
+            int matrizConverge;
+            int noConverge = 1;
 #pragma omp parallel for num_threads(T) reduction(& \
                                                   : noConverge)
-    for (int i = 0; i < numLinhasDoNo; i++)
-    {
-        // printf("Linha %d -> %lf %lf %lf %lf %lf \n", numDaPrimeiraLinhaDoNo + i, A[0 + i * n], A[1 + i * n], A[2 + i * n], A[3 + i * n], A[4 + i * n]);
+            for (int i = 0; i < numLinhasDoNo; i++)
+            {
+                // printf("Linha %d -> %lf %lf %lf %lf %lf \n", numDaPrimeiraLinhaDoNo + i, A[0 + i * n], A[1 + i * n], A[2 + i * n], A[3 + i * n], A[4 + i * n]);
 
-        if (!linhaConverge(A, n, numDaPrimeiraLinhaDoNo + i, i * n))
-        {
-            noConverge = 0;
-        }
-    }
+                if (!linhaConverge(A, n, numDaPrimeiraLinhaDoNo + i, i * n))
+                {
+                    noConverge = 0;
+                }
+            }
 
-    MPI_Reduce(&noConverge, &matrizConverge, 1, MPI_INT, MPI_LAND, 0, MPI_COMM_WORLD);
+            MPI_Reduce(&noConverge, &matrizConverge, 1, MPI_INT, MPI_LAND, 0, MPI_COMM_WORLD);
 
-    if (rank == 0)
-    {
+            if (rank == 0)
+            {
 
-        if (!matrizConverge)
-        {
-            printf("Nao converge... finalizando\n");
-        }
-    }
+                if (!matrizConverge)
+                {
+                    printf("Nao converge... finalizando\n");
+                }
+            }
 
-    int continua = 0;
+            int continua = 0;
 
-    while (1)
-    {
+            while (1)
+            {
 // o vetor xantigo é passado do nó master para os outros por um Broadcast
 // Calculando o x atual segundo o método
 #pragma omp parallel for num_threads(T)
-        for (int i = 0; i < numLinhasDoNo; i++)
-        {
-            int numLinha = numDaPrimeiraLinhaDoNo + i;
+                for (int i = 0; i < numLinhasDoNo; i++)
+                {
+                    int numLinha = numDaPrimeiraLinhaDoNo + i;
 
-            // printf("Linha %d -> b =>%lf\n", numLinha, b[i]);
+                    // printf("Linha %d -> b =>%lf\n", numLinha, b[i]);
 
-            x[i] = b[i];
-            for (int j = 0; j < numLinha; j++)
-            {
-                x[i] -= A[i * n + j] * xanterior[j];
+                    x[i] = b[i];
+                    for (int j = 0; j < numLinha; j++)
+                    {
+                        x[i] -= A[i * n + j] * xanterior[j];
+                    }
+                    for (int j = numLinha + 1; j < n; j++)
+                    {
+                        x[i] -= A[i * n + j] * xanterior[j];
+                    }
+
+                    x[i] /= A[i * n + numLinha];
+                }
+
+                MPI_Gatherv(x, numLinhasDoNo, MPI_DOUBLE, xf, gatherDataCount, gatherDataMap, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+                // verificação condição de parada
+                if (rank == 0)
+                {
+                    // for (int i = 0; i < n; i++)
+                    // {
+                    //     printf("x[%d] = %lf\n", i, xf[i]);
+                    // }
+                    // for (int i = 0; i < n; i++)
+                    // {
+                    //     printf("xa[%d] = %lf\n", i, xanterior[i]);
+                    // }
+                    continua = !verificaCondicaoDeParada(xf, xanterior, limiar, n);
+                }
+
+                MPI_Bcast(&continua, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+                if (!continua)
+                {
+                    break;
+                }
+
+                // copia x em xanterior
+                // #pragma omp parallel for num_threads(T)
+                if (rank == 0)
+                {
+                    for (int i = 0; i < n; i++)
+                    {
+                        // printf("x[%d] = %lf | xa[%d] = %lf\n", i, x[i], i, xanterior[i]);
+                        xanterior[i] = xf[i];
+                    }
+                }
+                MPI_Bcast(xanterior, n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
             }
-            for (int j = numLinha + 1; j < n; j++)
+
+            // MPI_Bcast(xf, n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+            if (rank == 0)
             {
-                x[i] -= A[i * n + j] * xanterior[j];
-            }
-
-            x[i] /= A[i * n + numLinha];
-        }
-
-        MPI_Gatherv(x, numLinhasDoNo, MPI_DOUBLE, xf, gatherDataCount, gatherDataMap, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-        // verificação condição de parada
-        if (rank == 0)
-        {
-            // for (int i = 0; i < n; i++)
-            // {
-            //     printf("x[%d] = %lf\n", i, xf[i]);
-            // }
-            // for (int i = 0; i < n; i++)
-            // {
-            //     printf("xa[%d] = %lf\n", i, xanterior[i]);
-            // }
-            continua = !verificaCondicaoDeParada(xf, xanterior, limiar, n);
-        }
-
-        MPI_Bcast(&continua, 1, MPI_INT, 0, MPI_COMM_WORLD);
-
-        if (!continua)
-        {
-            break;
-        }
-
-        // copia x em xanterior
-        // #pragma omp parallel for num_threads(T)
-        if (rank == 0)
-        {
-            for (int i = 0; i < n; i++)
-            {
-                // printf("x[%d] = %lf | xa[%d] = %lf\n", i, x[i], i, xanterior[i]);
-                xanterior[i] = xf[i];
+                // for (int j = 0; j < numLinhasDoNo; j++)
+                // {
+                //     double sum = 0;
+                //     for (int i = 0; i < n; i++)
+                //     {
+                //         sum += A[j * n + i] * xf[i];
+                //         // printf("%lf*%lf ", A[le*n+i], x[i]);
+                //     }
+                //     printf("bj[%d] = %lf\n", j + numDaPrimeiraLinhaDoNo, sum);
+                // }
+                // for (int i = 0; i < numLinhasDoNo; i++)
+                // {
+                //     printf("b[%d] = %lf\n", i + numDaPrimeiraLinhaDoNo, b[i]);
+                // }
+                wtime = omp_get_wtime() - wtime;
+                printf("%lf\n", wtime);
             }
         }
-        MPI_Bcast(xanterior, n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
 
-    // MPI_Bcast(xf, n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-    if (rank == 0)
-    {
-        // for (int j = 0; j < numLinhasDoNo; j++)
-        // {
-        //     double sum = 0;
-        //     for (int i = 0; i < n; i++)
-        //     {
-        //         sum += A[j * n + i] * xf[i];
-        //         // printf("%lf*%lf ", A[le*n+i], x[i]);
-        //     }
-        //     printf("bj[%d] = %lf\n", j + numDaPrimeiraLinhaDoNo, sum);
-        // }
-        // for (int i = 0; i < numLinhasDoNo; i++)
-        // {
-        //     printf("b[%d] = %lf\n", i + numDaPrimeiraLinhaDoNo, b[i]);
-        // }
-        wtime = omp_get_wtime() - wtime;
-        printf("%lf\n", wtime);
-    }
     free(A);
     free(x);
     free(b);

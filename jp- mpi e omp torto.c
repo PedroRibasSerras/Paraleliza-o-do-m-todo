@@ -22,7 +22,7 @@
 int P = 2; // Número de processos MPI
 int T = 8; // Número de threads
 
-void iniciandoMatrizeA(double *A, int n, int numLinhasNo, int offset, int maxInter)
+void iniciandoMatrizes(double *A, double *b, double *xanterior, int n, int maxInter)
 {
     /*
          Gerando uma matriz que sempre convirja para testar o algoritmo
@@ -30,9 +30,8 @@ void iniciandoMatrizeA(double *A, int n, int numLinhasNo, int offset, int maxInt
          dessa linha, menos o elemento da diagonal principal, serão divididos por esse somatório.
          */
 
-    for (int i = 0; i < numLinhasNo; i++)
+    for (int i = 0; i < n; i++)
     {
-        srand(SEED + offset + i);
         double linha = 0.0;
         for (int j = 0; j < n; j++)
         {
@@ -42,9 +41,21 @@ void iniciandoMatrizeA(double *A, int n, int numLinhasNo, int offset, int maxInt
 
         for (int j = 0; j < n; j++)
         {
-            if (i + offset != j)
+            if (i != j)
                 A[i * n + j] = A[i * n + j] / linha;
         }
+    }
+
+    // Randomizando os valores do vetor b
+    for (int i = 0; i < n; i++)
+    {
+        b[i] = rand();
+    }
+
+    // Iniciando o vetor xanterior inicialmente com valores nulos
+    for (int i = 0; i < n; i++)
+    {
+        xanterior[i] = 0;
     }
 }
 
@@ -135,10 +146,12 @@ int converge(double *m, int n)
 
 int main(int argc, char *argv[])
 {
+    srand(SEED);
 
-    int n = 3;          // Tamanho da matriz quadrada
-    int maxInter = 100; // Variável para definir o max que os valores aleatórios serão gerados
-    double wtime;       // Variável para captar o tempo de execução
+    int n = 3;            // Tamanho da matriz quadrada
+    int maxInter = 100;   // Variável para definir o max que os valores aleatórios serão gerados
+    double wtime;         // Variável para captar o tempo de execução
+    double *sendB, *recB; // Buffers de envio e recebimento
 
     double limiar = 1e-14; // Definindo o limiar para a condição de parada
 
@@ -167,45 +180,69 @@ int main(int argc, char *argv[])
     int linhasPorNo = n / P;
     int restoLinhas = n % P;
     // Também são iniciados os vetores que determinam os dados que vão para cada processo por meio de um scatterv
+    int scatterDataMap[P];
+    int scatterDataCount[P];
     int gatherDataMap[P];
     int gatherDataCount[P];
 
-    gatherDataMap[0] = 0;
-    gatherDataCount[0] = (0 < restoLinhas ? linhasPorNo + 1 : linhasPorNo);
-    for (int i = 1; i < P; i++)
-    {
-        gatherDataMap[i] = gatherDataCount[i - 1] + gatherDataMap[i - 1];
-        gatherDataCount[i] = (i < restoLinhas ? linhasPorNo + 1 : linhasPorNo);
-    }
+    double *A;
+    double *x;
+    double *b;
+    double *xanterior;
+    xanterior = (double *)malloc((n) * sizeof(double));
 
-    double *xf = (double *)malloc((n) * sizeof(double));
-    double *A = (double *)malloc((gatherDataCount[rank] * n) * sizeof(double));
-    double *x = (double *)malloc((gatherDataCount[rank]) * sizeof(double));
-    double *b = (double *)malloc((gatherDataCount[rank]) * sizeof(double));
-    double *xanterior = (double *)malloc((n) * sizeof(double));
+    double *eb, *ex;
+
+    if (rank == 0)
+    {
+        gatherDataMap[0] = 0;
+        gatherDataCount[0] = (0 < restoLinhas ? linhasPorNo + 1 : linhasPorNo);
+        // Como os vetores scatterData só importam para o sorce do scatter, eles são preenchidos apenas dentro do processo fonte.
+        // Nessa separação, as linhas que sobraram da divisão inteira de linhas por nós são disbtribuidas para os primeiros nós.
+        // Para isso cada processo receberá uma linha a mais, no máximo, do que a calculáda, sendo que essas linhas a mais são distribuidas
+        // a partir do primeiro processo (rank == 0) subindo em direção ao último processo. Como é feito nas linhas abaixo.
+        scatterDataMap[0] = 0;
+        scatterDataCount[0] = n * gatherDataCount[0];
+
+        for (int i = 1; i < P; i++)
+        {
+            gatherDataMap[i] = gatherDataCount[i - 1] + gatherDataMap[i - 1];
+            gatherDataCount[i] = (i < restoLinhas ? linhasPorNo + 1 : linhasPorNo);
+            scatterDataCount[i] = n * gatherDataCount[i];
+            scatterDataMap[i] = scatterDataCount[i - 1] + scatterDataMap[i - 1];
+        }
+
+        // Alocando buffer de recebimento para o processo 0
+        recB = (double *)malloc(scatterDataCount[0] * sizeof(double));
+
+        // Alocando as matrizes do problema
+        A = (double *)malloc((n * n) * sizeof(double));
+        x = (double *)malloc((n) * sizeof(double));
+        b = (double *)malloc((n) * sizeof(double));
+
+        // Incializando os valores das matrizes
+        iniciandoMatrizes(A, b, xanterior, n, maxInter);
+
+        // Inicio do Método Iterativo de Jacobi-Richardson, logo começando a contagem do tempo
+        wtime = omp_get_wtime();
+
+        // Comunicação scatterV para distribuir as linhas para cada nó do cluster
+        MPI_Scatterv(A, scatterDataCount, scatterDataMap, MPI_DOUBLE, recB, scatterDataCount[0], MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    }
 
     int numLinhasDoNo = rank < restoLinhas ? linhasPorNo + 1 : linhasPorNo;
     int numDeDadosDoNo = n * numLinhasDoNo;
     int numDaPrimeiraLinhaDoNo = rank * linhasPorNo + (rank < restoLinhas ? rank : restoLinhas);
-
-    iniciandoMatrizeA(A, n, numLinhasDoNo, numDaPrimeiraLinhaDoNo, maxInter);
-
-    // Randomizando os valores do vetor b
-    for (int i = 0; i < numLinhasDoNo; i++)
-    {
-        srand(SEED + numDaPrimeiraLinhaDoNo + i);
-        b[i] = rand();
-    }
-
-    // Iniciando o vetor xanterior inicialmente com valores nulos
-    for (int i = 0; i < n; i++)
-    {
-        xanterior[i] = 0;
-    }
+    ex = (double *)malloc(numLinhasDoNo * sizeof(double));
+    eb = (double *)malloc(numLinhasDoNo * sizeof(double));
 
     // printf("No: %d | numLinhasDoNo: %d | pl: %d\n", rank, numLinhasDoNo, numDaPrimeiraLinhaDoNo);
 
-    wtime = omp_get_wtime();
+    if (rank != 0)
+    {
+        recB = (double *)malloc(numDeDadosDoNo * sizeof(double));
+        MPI_Scatterv(sendB, scatterDataCount, scatterDataMap, MPI_DOUBLE, recB, numDeDadosDoNo, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    }
     // Verificando a convergência do método, caso não convirja imprime a matriz e uma mensagem informando isso e finaliza o algoritmo
     int matrizConverge;
     int noConverge = 1;
@@ -213,26 +250,46 @@ int main(int argc, char *argv[])
                                                   : noConverge)
     for (int i = 0; i < numLinhasDoNo; i++)
     {
-        // printf("Linha %d -> %lf %lf %lf %lf %lf \n", numDaPrimeiraLinhaDoNo + i, A[0 + i * n], A[1 + i * n], A[2 + i * n], A[3 + i * n], A[4 + i * n]);
+        // printf("Linha %d -> %lf %lf %lf %lf %lf \n", numDaPrimeiraLinhaDoNo + i, recB[0 + i * n], recB[1 + i * n], recB[2 + i * n], recB[3 + i * n], recB[4 + i * n]);
 
-        if (!linhaConverge(A, n, numDaPrimeiraLinhaDoNo + i, i * n))
+        if (!linhaConverge(recB, n, numDaPrimeiraLinhaDoNo + i, i * n))
         {
             noConverge = 0;
         }
     }
-
-    MPI_Reduce(&noConverge, &matrizConverge, 1, MPI_INT, MPI_LAND, 0, MPI_COMM_WORLD);
+    if (noConverge)
+        MPI_Reduce(&noConverge, &matrizConverge, 1, MPI_INT, MPI_LAND, 0, MPI_COMM_WORLD);
 
     if (rank == 0)
     {
 
         if (!matrizConverge)
         {
+            for (int i = 0; i < n; i++)
+            {
+                for (int j = 0; j < n; j++)
+                {
+                    printf("%lf ", A[i * n + j]);
+                }
+                printf("\n");
+            }
             printf("Nao converge... finalizando\n");
         }
     }
 
+    // MPI_Scatterv(sendB, scatterDataCount, scatterDataMap, MPI_DOUBLE, recB, numDeDadosDoNo, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    MPI_Scatterv(b, gatherDataCount, gatherDataMap, MPI_DOUBLE, eb, numLinhasDoNo, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    // printf("N linhas gc %d | N linhas n %d\n Primeira linha gc %d | Primeira linha n %d\n", gatherDataCount[rank], numLinhasDoNo, gatherDataMap[rank], numDaPrimeiraLinhaDoNo);
+    // for(int i = 0; i<numLinhasDoNo; i ++){
+
+    // }
+
+    MPI_Bcast(xanterior, n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
     int continua = 0;
+    int k = 0;
 
     while (1)
     {
@@ -242,36 +299,37 @@ int main(int argc, char *argv[])
         for (int i = 0; i < numLinhasDoNo; i++)
         {
             int numLinha = numDaPrimeiraLinhaDoNo + i;
-
-            // printf("Linha %d -> b =>%lf\n", numLinha, b[i]);
-
-            x[i] = b[i];
+            // if (k == 0)
+            // {
+            //     printf("Linha %d -> b =>%lf\n", numLinha, eb[i]);
+            // }
+            ex[i] = eb[i];
             for (int j = 0; j < numLinha; j++)
             {
-                x[i] -= A[i * n + j] * xanterior[j];
+                ex[i] -= recB[i * n + j] * xanterior[j];
             }
             for (int j = numLinha + 1; j < n; j++)
             {
-                x[i] -= A[i * n + j] * xanterior[j];
+                ex[i] -= recB[i * n + j] * xanterior[j];
             }
 
-            x[i] /= A[i * n + numLinha];
+            ex[i] /= recB[i * n + numLinha];
         }
 
-        MPI_Gatherv(x, numLinhasDoNo, MPI_DOUBLE, xf, gatherDataCount, gatherDataMap, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gatherv(ex, numLinhasDoNo, MPI_DOUBLE, x, gatherDataCount, gatherDataMap, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
         // verificação condição de parada
         if (rank == 0)
         {
             // for (int i = 0; i < n; i++)
             // {
-            //     printf("x[%d] = %lf\n", i, xf[i]);
+            //     printf("x[%d] = %lf\n", i, x[i]);
             // }
             // for (int i = 0; i < n; i++)
             // {
             //     printf("xa[%d] = %lf\n", i, xanterior[i]);
             // }
-            continua = !verificaCondicaoDeParada(xf, xanterior, limiar, n);
+            continua = !verificaCondicaoDeParada(x, xanterior, limiar, n);
         }
 
         MPI_Bcast(&continua, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -288,36 +346,35 @@ int main(int argc, char *argv[])
             for (int i = 0; i < n; i++)
             {
                 // printf("x[%d] = %lf | xa[%d] = %lf\n", i, x[i], i, xanterior[i]);
-                xanterior[i] = xf[i];
+                xanterior[i] = x[i];
             }
         }
         MPI_Bcast(xanterior, n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
 
-    // MPI_Bcast(xf, n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
     if (rank == 0)
     {
-        // for (int j = 0; j < numLinhasDoNo; j++)
+        // for (int j = 0; j < n; j++)
         // {
         //     double sum = 0;
         //     for (int i = 0; i < n; i++)
         //     {
-        //         sum += A[j * n + i] * xf[i];
+        //         sum += A[j * n + i] * x[i];
         //         // printf("%lf*%lf ", A[le*n+i], x[i]);
         //     }
-        //     printf("bj[%d] = %lf\n", j + numDaPrimeiraLinhaDoNo, sum);
+        //     printf("bj[%d] = %lf\n", j, sum);
         // }
-        // for (int i = 0; i < numLinhasDoNo; i++)
+        // for (int i = 0; i < n; i++)
         // {
-        //     printf("b[%d] = %lf\n", i + numDaPrimeiraLinhaDoNo, b[i]);
+        //     printf("b[%d] = %lf\n", i, b[i]);
         // }
         wtime = omp_get_wtime() - wtime;
-        printf("%lf\n", wtime);
+        printf("Tempo: %lf\n", wtime);
+
+        free(A);
+        free(x);
+        free(b);
     }
-    free(A);
-    free(x);
-    free(b);
     free(xanterior);
 
     MPI_Finalize();
