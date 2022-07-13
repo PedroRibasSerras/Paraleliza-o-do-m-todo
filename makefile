@@ -45,7 +45,7 @@ run-parOMP:
 	./jacobipar-OpenMP $(N) $(T)
 
 run-par:
-	mpirun -np $(P) -host hal02,hal03,hal04,hal05,hal06 jacobipar $(N) $(P) $(T)
+	mpirun -np $(P) -host hal02,hal03,hal04,hal05,hal06,hal07,hal08,hal09 jacobipar $(N) $(P) $(T)
 
 run-teste:
 	mpirun -np 4 -host hal02,hal03,hal04,hal05,hal06,hal07,hal08,hal09 teste 46000 4 4

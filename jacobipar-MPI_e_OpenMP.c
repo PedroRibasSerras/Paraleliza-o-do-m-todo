@@ -70,7 +70,7 @@ int verificaCondicaoDeParada(double *x, double *xa, double limiar, int n)
     return 0;
 }
 
-// Função para verificar se a matriz analisada converge para o algoritmo
+// Função para verificar se a linha da matriz analisada "converge" para o algoritmo
 int linhaConverge(double *m, int n, int diagonalPrincipal, int inicioDaLinha)
 {
     int res = 1;
@@ -100,39 +100,6 @@ int linhaConverge(double *m, int n, int diagonalPrincipal, int inicioDaLinha)
     return res;
 }
 
-// Função para verificar se a matriz analisada converge para o algoritmo
-int converge(double *m, int n)
-{
-    int res = 1;
-
-#pragma omp parallel for num_threads(T) reduction(& \
-                                                  : res)
-    for (int i = 0; i < n; i++)
-    {
-        double sum = 0.0;
-
-        // A diagonal principal não pode ter elementos nulos
-        if (!m[i * n + i])
-            res = 0;
-
-        // Feito dois fors para evitar o uso de if dentro do for
-        for (int j = 0; j < i; j++)
-        {
-            sum += fabs(m[i * n + j]);
-        }
-        for (int j = i + 1; j < n; j++)
-        {
-            sum += fabs(m[i * n + j]);
-        }
-
-        // caso maior que 1, não converge
-        if (sum / fabs(m[i * n + i]) > 1)
-            res = 0;
-    }
-    // Se passar por todos os teste é porque converge
-    return res;
-}
-
 int main(int argc, char *argv[])
 {
 
@@ -145,6 +112,7 @@ int main(int argc, char *argv[])
     int numprocs, rank, namelen;
     char processor_name[MPI_MAX_PROCESSOR_NAME];
     int iam = 0, np = 1, provided;
+    MPI_Status status;
 
     MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE /*MPI_THREAD_SINGLE*/, &provided);
 
@@ -166,10 +134,11 @@ int main(int argc, char *argv[])
     // Como a divisão de processos é feita por linhas, vamos calcular quantas linhas cada uma receberá de forma genériaca
     int linhasPorNo = n / P;
     int restoLinhas = n % P;
-    // Também são iniciados os vetores que determinam os dados que vão para cada processo por meio de um scatterv
+    // Também são iniciados os vetores que determinam os dados que vao para cada processo por meio de um gatherv
     int gatherDataMap[P];
     int gatherDataCount[P];
 
+    // Faz a separação de linhas que serao mandadas para cada no e forma os vetores necessarios para o gatherv
     gatherDataMap[0] = 0;
     gatherDataCount[0] = (0 < restoLinhas ? linhasPorNo + 1 : linhasPorNo);
     for (int i = 1; i < P; i++)
@@ -203,8 +172,7 @@ int main(int argc, char *argv[])
         xanterior[i] = 0;
     }
 
-    // printf("No: %d | numLinhasDoNo: %d | pl: %d\n", rank, numLinhasDoNo, numDaPrimeiraLinhaDoNo);
-
+    // Inicia a contagem do tempo
     wtime = omp_get_wtime();
     // Verificando a convergência do método, caso não convirja imprime a matriz e uma mensagem informando isso e finaliza o algoritmo
     int matrizConverge;
@@ -225,124 +193,161 @@ int main(int argc, char *argv[])
 
     if (rank == 0)
     {
-
         if (!matrizConverge)
         {
+            fflush(0);
             printf("Nao converge... finalizando\n");
+            fflush(0);
         }
     }
 
-    int continua = 0;
+    MPI_Bcast(&matrizConverge, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-    while (1)
+    if (matrizConverge)
     {
-// o vetor xantigo é passado do nó master para os outros por um Broadcast
-// Calculando o x atual segundo o método
+
+        int continua = 0;
+
+        while (1)
+        {
+
+// Calculando os x[i] atuais segundo o método
 #pragma omp parallel for num_threads(T)
-        for (int i = 0; i < numLinhasDoNo; i++)
-        {
-            int numLinha = numDaPrimeiraLinhaDoNo + i;
-
-            // printf("Linha %d -> b =>%lf\n", numLinha, b[i]);
-
-            x[i] = b[i];
-            for (int j = 0; j < numLinha; j++)
+            for (int i = 0; i < numLinhasDoNo; i++)
             {
-                x[i] -= A[i * n + j] * xanterior[j];
-            }
-            for (int j = numLinha + 1; j < n; j++)
-            {
-                x[i] -= A[i * n + j] * xanterior[j];
+                int numLinha = numDaPrimeiraLinhaDoNo + i;
+
+                x[i] = b[i];
+                for (int j = 0; j < numLinha; j++)
+                {
+                    x[i] -= A[i * n + j] * xanterior[j];
+                }
+                for (int j = numLinha + 1; j < n; j++)
+                {
+                    x[i] -= A[i * n + j] * xanterior[j];
+                }
+
+                x[i] /= A[i * n + numLinha];
             }
 
-            x[i] /= A[i * n + numLinha];
+            // Envia os valores de x[i] que foram encontrados pelos processos e envia para o processo 0, montando o vetor xf
+            MPI_Gatherv(x, numLinhasDoNo, MPI_DOUBLE, xf, gatherDataCount, gatherDataMap, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+            // verificação condição de parada
+            if (rank == 0)
+            {
+                continua = !verificaCondicaoDeParada(xf, xanterior, limiar, n);
+            }
+
+            // Envia para todos os nós se é para parar ou continuar as iteracoes do metodo Jacobi
+            MPI_Bcast(&continua, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+            if (!continua)
+            {
+                // Todos os processos MPI param o metodo
+                break;
+            }
+
+            // copia xf em xanterior
+            if (rank == 0)
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    xanterior[i] = xf[i];
+                }
+            }
+            MPI_Bcast(xanterior, n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         }
 
-        MPI_Gatherv(x, numLinhasDoNo, MPI_DOUBLE, xf, gatherDataCount, gatherDataMap, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-        // verificação condição de parada
+        int le;
+        int rankImprime;
         if (rank == 0)
         {
-            // for (int i = 0; i < n; i++)
-            // {
-            //     printf("x[%d] = %lf\n", i, xf[i]);
-            // }
-            // for (int i = 0; i < n; i++)
-            // {
-            //     printf("xa[%d] = %lf\n", i, xanterior[i]);
-            // }
-            continua = !verificaCondicaoDeParada(xf, xanterior, limiar, n);
-        }
 
-        MPI_Bcast(&continua, 1, MPI_INT, 0, MPI_COMM_WORLD);
-
-        if (!continua)
-        {
-            break;
-        }
-
-        // copia x em xanterior
-        // #pragma omp parallel for num_threads(T)
-        if (rank == 0)
-        {
-            for (int i = 0; i < n; i++)
+            printf("Escolha uma linha entre 1-%d para verificar o resultado da equacao: ", n);
+            fflush(0);
+            scanf("%d", &le);
+            fflush(0);
+            while (le < 1 || le > n)
             {
-                // printf("x[%d] = %lf | xa[%d] = %lf\n", i, x[i], i, xanterior[i]);
-                xanterior[i] = xf[i];
+                printf("Linha invalida. O numero da linha deve estar 1-%d: ", n);
+                fflush(0);
+                scanf("%d", &le);
+                fflush(0);
+            }
+            le--;
+
+            if (le >= gatherDataMap[P - 1])
+            {
+                rankImprime = P - 1;
+            }
+            else
+            {
+                int i = 0;
+                while (gatherDataMap[i] <= le)
+                {
+                    i++;
+                }
+                rankImprime = i - 1;
+            }
+
+            wtime = omp_get_wtime() - wtime;
+            printf("Tempo: %lf\n", wtime);
+            fflush(0);
+        }
+
+        fflush(0);
+        MPI_Bcast(&rankImprime, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        if (rankImprime == 0)
+        {
+            if (rank == 0)
+            {
+                double sum = 0;
+                for (int i = 0; i < n; i++)
+                {
+                    sum += A[le * n + i] * xf[i];
+                }
+                printf("Valor pelo método iterativo de jacobi-richardson: %lf \n", sum);
+                fflush(0);
+
+                printf("Valor real: %lf\n", b[le]);
+                fflush(0);
             }
         }
-        MPI_Bcast(xanterior, n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        else
+        {
+            if (rankImprime == rank)
+            {
+                MPI_Recv(xanterior, n, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD, &status);
+                MPI_Recv(&le, 1, MPI_INT, 0, 1, MPI_COMM_WORLD, &status);
+
+                double sum = 0;
+                for (int i = 0; i < n; i++)
+                {
+                    sum += A[(le - numDaPrimeiraLinhaDoNo) * n + i] * xanterior[i];
+                }
+                printf("Valor pelo método iterativo de jacobi-richardson: %lf \n", sum);
+                fflush(0);
+
+                printf("Valor real: %lf\n", b[le - numDaPrimeiraLinhaDoNo]);
+                fflush(0);
+            }
+            if (rank == 0)
+            {
+                MPI_Send(xf, n, MPI_DOUBLE, rankImprime, 0, MPI_COMM_WORLD);
+                MPI_Send(&le, 1, MPI_INT, rankImprime, 1, MPI_COMM_WORLD);
+            }
+        }
     }
 
-    // MPI_Bcast(xf, n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-    if (rank == 0)
-    {
-        // for (int j = 0; j < numLinhasDoNo; j++)
-        // {
-        //     double sum = 0;
-        //     for (int i = 0; i < n; i++)
-        //     {
-        //         sum += A[j * n + i] * xf[i];
-        //         // printf("%lf*%lf ", A[le*n+i], x[i]);
-        //     }
-        //     printf("bj[%d] = %lf\n", j + numDaPrimeiraLinhaDoNo, sum);
-        // }
-        // for (int i = 0; i < numLinhasDoNo; i++)
-        // {
-        //     printf("b[%d] = %lf\n", i + numDaPrimeiraLinhaDoNo, b[i]);
-        // }
-        wtime = omp_get_wtime() - wtime;
-        printf("%lf\n", wtime);
-    }
+    // Desalocando a memória dos vetores
     free(A);
+    free(xf);
     free(x);
     free(b);
     free(xanterior);
 
     MPI_Finalize();
-
-    //     int le;
-
-    //     printf("Escolha uma linha entre 1-%d para verificar o resultado da equacao: ", n);
-    //     scanf("%d", &le);
-    //     while (le < 1 || le > n)
-    //     {
-    //         printf("Linha invalida. O numero da linha deve estar 1-%d: ", n);
-    //         scanf("%d", &le);
-    //     }
-    //     le--;
-
-    //     double sum = 0;
-    //     for (int i = 0; i < n; i++)
-    //     {
-    //         sum += A[le * n + i] * x[i];
-    //         // printf("%lf*%lf ", A[le*n+i], x[i]);
-    //     }
-    //     printf("Valor pelo método iterativo de jacobi-richardson: %lf \n", sum);
-    //     printf("Valor real: %lf\n", b[le]);
-
-    //     // Desalocando a memória dos vetores
 
     return 0;
 }
