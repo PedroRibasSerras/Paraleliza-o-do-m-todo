@@ -263,6 +263,9 @@ int main(int argc, char *argv[])
         int rankImprime;
         if (rank == 0)
         {
+            wtime = omp_get_wtime() - wtime;
+            printf("Tempo: %lf\n", wtime);
+            fflush(0);
 
             printf("Escolha uma linha entre 1-%d para verificar o resultado da equacao: ", n);
             fflush(0);
@@ -290,10 +293,6 @@ int main(int argc, char *argv[])
                 }
                 rankImprime = i - 1;
             }
-
-            wtime = omp_get_wtime() - wtime;
-            printf("Tempo: %lf\n", wtime);
-            fflush(0);
         }
 
         fflush(0);

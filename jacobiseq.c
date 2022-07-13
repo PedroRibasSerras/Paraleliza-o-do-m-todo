@@ -123,85 +123,84 @@ int main(int argc, char *argv[])
     }
 
     // Iniciando o vetor xanterior inicialmente com valores nulos
-    for (int te = 0; te < 30; te++)
+
+    for (int i = 0; i < n; i++)
+    {
+        xanterior[i] = 0;
+    }
+
+    // Inicio do Método Iterativo de Jacobi-Richardson, logo começando a contagem do tempo
+    wtime = omp_get_wtime();
+
+    // Verificando a convergência do método, caso não convirja imprime a matriz e uma mensagem informando isso e finaliza o algoritmo
+    if (!converge(A, n))
     {
         for (int i = 0; i < n; i++)
         {
-            xanterior[i] = 0;
+            for (int j = 0; j < n; j++)
+            {
+                printf("%lf ", A[i * n + j]);
+            }
+            printf("\n");
         }
-
-        // Inicio do Método Iterativo de Jacobi-Richardson, logo começando a contagem do tempo
-        wtime = omp_get_wtime();
-
-        // Verificando a convergência do método, caso não convirja imprime a matriz e uma mensagem informando isso e finaliza o algoritmo
-        if (!converge(A, n))
-        {
-            for (int i = 0; i < n; i++)
-            {
-                for (int j = 0; j < n; j++)
-                {
-                    printf("%lf ", A[i * n + j]);
-                }
-                printf("\n");
-            }
-            printf("Nao converge... finalizando");
-            return -1;
-        }
-
-        while (1)
-        {
-            // Calculando o x atual segundo o método
-            for (int i = 0; i < n; i++)
-            {
-                x[i] = b[i];
-                for (int j = 0; j < i; j++)
-                {
-                    x[i] -= A[i * n + j] * xanterior[j];
-                }
-                for (int j = i + 1; j < n; j++)
-                {
-                    x[i] -= A[i * n + j] * xanterior[j];
-                }
-
-                x[i] /= A[i * n + i];
-            }
-
-            // verificação condição de parada
-            if (verificaCondicaoDeParada(x, xanterior, limiar, n))
-            {
-                break;
-            }
-
-            // copia x em xanterior
-            for (int i = 0; i < n; i++)
-            {
-                xanterior[i] = x[i];
-            }
-        }
-
-        wtime = omp_get_wtime() - wtime; // Fim do Método Iterativo de Jacobi-Richardson, logo fim da contagem do tempo
-
-        printf("%lf\n", wtime);
+        printf("Nao converge... finalizando");
+        return -1;
     }
-    // int le;
 
-    // printf("Escolha uma linha entre 1-%d para verificar o resultado da equacao: ", n);
-    // scanf("%d", &le);
-    // while (le < 1 || le > n)
-    // {
-    //     printf("Linha invalida. O numero da linha deve estar 1-%d: ", n);
-    //     scanf("%d", &le);
-    // }
-    // le--;
+    while (1)
+    {
+        // Calculando o x atual segundo o método
+        for (int i = 0; i < n; i++)
+        {
+            x[i] = b[i];
+            for (int j = 0; j < i; j++)
+            {
+                x[i] -= A[i * n + j] * xanterior[j];
+            }
+            for (int j = i + 1; j < n; j++)
+            {
+                x[i] -= A[i * n + j] * xanterior[j];
+            }
 
-    // double sum = 0;
-    // for (int i = 0; i < n; i++)
-    // {
-    //     sum += A[le * n + i] * x[i];
-    //     // printf("%lf*%lf ", A[le*n+i], x[i]);
-    // }
-    // printf("Valor pelo método iterativo de jacobi-richardson: %lf \n", sum);
-    // printf("Valor real: %lf\n", b[le]);
+            x[i] /= A[i * n + i];
+        }
+
+        // verificação condição de parada
+        if (verificaCondicaoDeParada(x, xanterior, limiar, n))
+        {
+            break;
+        }
+
+        // copia x em xanterior
+        for (int i = 0; i < n; i++)
+        {
+            xanterior[i] = x[i];
+        }
+    }
+
+    wtime = omp_get_wtime() - wtime; // Fim do Método Iterativo de Jacobi-Richardson, logo fim da contagem do tempo
+
+    printf("Tempo: %lf\n", wtime);
+
+    int le;
+
+    printf("Escolha uma linha entre 1-%d para verificar o resultado da equacao: ", n);
+    scanf("%d", &le);
+    while (le < 1 || le > n)
+    {
+        printf("Linha invalida. O numero da linha deve estar 1-%d: ", n);
+        scanf("%d", &le);
+    }
+    le--;
+
+    double sum = 0;
+    for (int i = 0; i < n; i++)
+    {
+        sum += A[le * n + i] * x[i];
+        // printf("%lf*%lf ", A[le*n+i], x[i]);
+    }
+    printf("Valor pelo método iterativo de jacobi-richardson: %lf \n", sum);
+    printf("Valor real: %lf\n", b[le]);
 
     // Desalocando a memória dos vetores
     free(A);
